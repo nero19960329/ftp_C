@@ -13,6 +13,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <sys/file.h>
+#include <pthread.h>
 
 #include "utilities.h"
 #include "user.h"
@@ -24,36 +26,33 @@ int recv_file(char* fileName, int fd);
 int pasv_handler(char* fileName, int listenfd, int retr_stor, int clientfd, char* fileInformation);
 int port_handler(char* ip, int port, char* fileName, int retr_stor, int clientfd, char* fileInformation);
 
+void* pasv_thread(void* arg);
+void* port_thread(void* arg);
+
+typedef struct args {
+	/* arguments in pasv */
+	int listenfd;
+	
+	/* arguments in port */
+	char* ip;
+	int port;
+	
+	/* arguments both in pasv and port */
+	char* fileName;
+	int retr_stor;
+	int clientfd;
+	char* fileInformation;
+	int fd_index;
+}args;
+
 extern int command_handler(int connfd, int fd_index, int* user_flag, int* pass_flag) {
 	char sentence[8192];
-	int p;
 	int len;
 	int tmp;
 	char **tmp_str;
 	char command[8192], arguments[8192];
-	int pasv_listenfd, pasv_connfd;
-	
-	char goodbye[] = "221-Thank you for using the FTP service.\r\n221-Goodbye.\r\n";
-	char no_user[] = "332 Not logged in.\r\n";
-	char user_ok[] = "331 Guest login ok, send your complete e-mail address as password.\r\n";
-	char user_fail[] = "530 User cannot log in.\r\n";
-	char password_ok[] = "230-Welcome to my FTP~\r\n230-Guest login ok, access restrictions apply.\r\n";
-	char system[] = "215 UNIX Type: L8\r\n";
-	char type_ok[] = "200 Type set to I.\r\n";
-	char type_error[] = "500 Invalid command.\r\n";
-	char mkd_ok[] = "257 Folder created.\r\n";
-	char mkd_fail[] = "553 Requested action not taken. File name not allowed.\r\n";
-	char mkd_fail_2[] = "550-Requested action not taken. Directory unavailable (e.g. no access).\r\n";
-	char mkd_has_same[] = "553 Requested action not taken. Its name is as same as an another folder.\r\n";
-	char dele_ok[] = "250 Delete file success.\r\n";
-	char dele_fail[] = "550-Requested action not taken. File unavailable(e.g. file not found, no access).\r\n";
-	char pasv_ok[] = "227 Entering Passive Mode ";
-	char pasv_fail[] = "425 Can't open data connection.\r\n";
-	char port_ok[] = "200 PORT command successful.\r\n";
-	char send_type_bin[] = "150 Opening BINARY mode data connection for ";
-	char send_data_ok[] = "226 Transfer complete.\r\n";
-	char send_data_fail[] = "550-Requested action not taken. File unavailable (e.g. file not found, no access).\r\n550-You can try 'PASV' command again.\r\n";
-	char no_such_command[] = "500 Syntax error, command unrecongnized.\r\n";
+	int pasv_listenfd;
+	pthread_t thread;
 	
 	len = recv(connfd, sentence, 8192, 0);
 	if (len == -1) {
@@ -108,7 +107,7 @@ extern int command_handler(int connfd, int fd_index, int* user_flag, int* pass_f
 			send(connfd, no_user, strlen(no_user), 0);
 		}
 	} else if (strcmp(command, "SYST") == 0) {
-		send(connfd, system, strlen(system), 0);
+		send(connfd, system_inf, strlen(system_inf), 0);
 	} else if (strcmp(command, "TYPE") == 0) {
 		if (strcmp(arguments, "I") == 0) {
 			send(connfd, type_ok, strlen(type_ok), 0);
@@ -116,7 +115,31 @@ extern int command_handler(int connfd, int fd_index, int* user_flag, int* pass_f
 			send(connfd, type_error, strlen(type_error), 0);
 		}
 	} else if (strcmp(command, "CWD") == 0) {
-		
+		char userPath[1024];
+		char respond[1024];
+		if (strlen(arguments) == 0) {
+			strcpy(userPath, filePath);
+		} else {
+			if (generate_path(arguments, userPath) == STATUS_ERROR) {
+				send(connfd, cwd_fail, strlen(cwd_fail), 0);
+				return STATUS_PASS;
+			}
+		}
+		set_filePath(&user_table, fd_index, userPath);
+		sprintf(respond, "%s%s.\r\n", cwd_ok, userPath);
+		send(connfd, respond, strlen(respond), 0);
+	} else if (strcmp(command, "CDUP") == 0) {
+		char *userPath;
+		char respond[1024];
+		get_filePath(user_table, fd_index, &userPath);
+		if (dir_up(&userPath) == 1) {
+			set_filePath(&user_table, fd_index, userPath);
+			send(connfd, cdup_fail, strlen(cdup_fail), 0);
+		} else {
+			set_filePath(&user_table, fd_index, userPath);
+			sprintf(respond, "%s%s.\r\n", cwd_ok, userPath);
+			send(connfd, respond, strlen(respond), 0);
+		}
 	} else if (strcmp(command, "LIST") == 0) {
 		char *checkPath;
 		get_filePath(user_table, fd_index, &checkPath);
@@ -197,6 +220,11 @@ extern int command_handler(int connfd, int fd_index, int* user_flag, int* pass_f
 		char tmp_str[1024];
 		FILE *fp;
 		
+		if (port_pasv == -1) {
+			send(connfd, no_pasv_port, strlen(no_pasv_port), 0);
+			return STATUS_PASS;
+		}
+		
 		if (arguments[0] == '.' && arguments[1] == '.' && arguments[2] == '/') {
 			send(connfd, dele_fail, strlen(dele_fail), 0);
 			return STATUS_PASS;
@@ -223,24 +251,30 @@ extern int command_handler(int connfd, int fd_index, int* user_flag, int* pass_f
 			}
 		}
 		
+		printf("port_pasv: %d\n", port_pasv);
 		if (port_pasv == 0) {
-			char ip[64];
-			int port[2];
+			char *ip = (char*)malloc(64 * sizeof(char));
+			int *port = (int*)malloc(2 * sizeof(int));
 			get_port_ip_port(user_table, fd_index, ip, port);
-			if (port_handler(ip, port[0] * 256 + port[1], tmp_filePath, retr_stor, connfd, tmp_str) == STATUS_OK) {
-				send(connfd, send_data_ok, strlen(send_data_ok), 0);
-				increase_bytes(&user_table, fd_index, get_file_size(tmp_filePath));
-			} else {
-				send(connfd, send_data_fail, strlen(send_data_fail), 0);
-			}
-		} else {
+			args* m_arg = (args*)malloc(sizeof(args));
+			m_arg->fileName = tmp_filePath;
+			m_arg->retr_stor = retr_stor;
+			m_arg->clientfd = connfd;
+			m_arg->fileInformation = tmp_str;
+			m_arg->fd_index = fd_index;
+			m_arg->ip = ip;
+			m_arg->port = port[0] * 256 + port[1];
+			pthread_create(&thread, NULL, port_thread, (void*)m_arg);
+		} else if (port_pasv == 1) {
 			get_pasv_fds(user_table, fd_index, &pasv_listenfd);
-			if (pasv_handler(tmp_filePath, pasv_listenfd, retr_stor, connfd, tmp_str) == STATUS_OK) {
-				send(connfd, send_data_ok, strlen(send_data_ok), 0);
-				increase_bytes(&user_table, fd_index, get_file_size(tmp_filePath));
-			} else {
-				send(connfd, send_data_fail, strlen(send_data_fail), 0);
-			}
+			args* m_arg = (args*)malloc(sizeof(args));
+			m_arg->fileName = tmp_filePath;
+			m_arg->listenfd = pasv_listenfd;
+			m_arg->retr_stor = retr_stor;
+			m_arg->clientfd = connfd;
+			m_arg->fileInformation = tmp_str;
+			m_arg->fd_index = fd_index;
+			pthread_create(&thread, NULL, pasv_thread, (void*)m_arg);
 		}
 	} else {
 		send(connfd, no_such_command, strlen(no_such_command), 0);
@@ -252,7 +286,6 @@ extern int command_handler(int connfd, int fd_index, int* user_flag, int* pass_f
 char* generate_pasv_ok(char* pasv_ok, char* ip, int* port) {
 	char **ips;
 	char *result = (char*)malloc(1024 * sizeof(char));
-	int i;
 	
 	ips = split(ip, ".", 4);
 	sprintf(result, "%s(%s,%s,%s,%s,%d,%d)\r\n", pasv_ok, ips[0], ips[1], ips[2], ips[3], port[0], port[1]);
@@ -306,8 +339,6 @@ int send_file(char* fileName, int fd) {
 	
 	fclose(fp);
 	
-	close(fd);
-	
 	return STATUS_OK;
 }
 
@@ -315,19 +346,32 @@ int recv_file(char* fileName, int fd) {
 	char buffer[8192];
 	int recv_len, write_len;
 	FILE *fp;
+	int lock_status;
 	
 	bzero(buffer, 8192);
 	fp = fopen(fileName, "wb");
 	
-	while(recv_len = recv(fd, buffer, 8192, 0)) {
+	/* lock this file */
+	lock_status = flock(fileno(fp), LOCK_EX);
+	printf("lock_status: %d\n", lock_status);
+	
+	if (lock_status) {
+		return STATUS_ERROR;
+	}
+	
+	while((recv_len = recv(fd, buffer, 8192, 0))) {
 		write_len = fwrite(buffer, sizeof(char), recv_len, fp);
 		if (write_len > recv_len) {
 			printf("file write failed.\n");
+			flock(fileno(fp), LOCK_UN);
 			fclose(fp);
 			return STATUS_ERROR;
 		}
 		bzero(buffer, 8192);
 	}
+	
+	/* unlock this file */
+	flock(fileno(fp), LOCK_UN);
 	
 	fclose(fp);
 
@@ -345,15 +389,20 @@ int pasv_handler(char* fileName, int listenfd, int retr_stor, int clientfd, char
 	send(clientfd, fileInformation, strlen(fileInformation), 0);
 	if (retr_stor == 0) {
 		if (send_file(fileName, connfd) == STATUS_ERROR) {
+			close(connfd);
+			close(listenfd);
 			return STATUS_ERROR;
 		}
-		close(listenfd);
 	} else {
 		if (recv_file(fileName, connfd) == STATUS_ERROR) {
+			close(connfd);
+			close(listenfd);
 			return STATUS_ERROR;
 		}
 	}
 	
+	close(connfd);
+	close(listenfd);
 	return STATUS_OK;
 }
 
@@ -398,3 +447,30 @@ int port_handler(char* ip, int port, char* fileName, int retr_stor, int clientfd
 	close(sockfd);
 	return STATUS_OK;
 }
+
+void* pasv_thread(void* arg) {
+	args *m_arg = (args*)arg;
+	
+	if (pasv_handler(m_arg->fileName, m_arg->listenfd, m_arg->retr_stor, m_arg->clientfd, m_arg->fileInformation) == STATUS_OK) {
+		send(m_arg->clientfd, send_data_ok, strlen(send_data_ok), 0);
+		increase_bytes(&user_table, m_arg->fd_index, get_file_size(m_arg->fileName));
+	} else {
+		send(m_arg->clientfd, send_data_fail, strlen(send_data_fail), 0);
+	}
+	
+	return (void*)NULL;
+}
+
+void* port_thread(void* arg) {
+	args *m_arg = (args*)arg;
+	
+	if (port_handler(m_arg->ip, m_arg->port, m_arg->fileName, m_arg->retr_stor, m_arg->clientfd, m_arg->fileInformation) == STATUS_OK) {
+		send(m_arg->clientfd, send_data_ok, strlen(send_data_ok), 0);
+		increase_bytes(&user_table, m_arg->fd_index, get_file_size(m_arg->fileName));
+	} else {
+		send(m_arg->clientfd, send_data_fail, strlen(send_data_fail), 0);
+	}
+	
+	return (void*)NULL;
+}
+

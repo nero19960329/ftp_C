@@ -1,4 +1,68 @@
 #include <dirent.h>
+#include <stdlib.h>
+#include <time.h>
+
+extern int str_to_int(char* s) {
+	int result = 0;
+	int length = strlen(s);
+	int i;
+	
+	for (i = 0; i < length; ++i) {
+		result *= 10;
+		result += (s[i] - '0');
+	}
+	
+	return result;
+}
+
+extern int dir_up(char* *userPath) {
+	int length = strlen(*userPath);
+	int i;
+	if (length <= strlen(filePath)) {
+		strcpy(*userPath, filePath);
+		return STATUS_ERROR;
+	} else {
+		(*userPath)[length - 1] = '\0';
+		for (i = length - 2; i >= 0; --i) {
+			if ((*userPath)[i] == '/') {
+				break;
+			}
+			(*userPath)[i] = '\0';
+		}
+		return STATUS_OK;
+	}
+}
+
+extern int generate_path(char* path, char* userPath) {
+	int length = strlen(path);
+	int i;
+	
+	/* check string */
+	if (path[0] == '/') {
+		return STATUS_ERROR;
+	}
+	for (i = 0; i < length; ++i) {
+		if (path[i] == '.') {
+			if (i == 0 || path[i - 1] == '/') {
+				return STATUS_ERROR;
+			}
+		}
+	}
+	
+	if (path[length - 1] != '/') {
+		strcat(path, "/");
+	}
+	
+	strcpy(userPath, filePath);
+	strcat(userPath, path);
+	
+	/* check if this directory does exist */
+	if (access(userPath, 0) == -1) {
+		return STATUS_ERROR;
+	} else {
+		return STATUS_OK;
+	}
+}
 
 // 改自http://www.cnblogs.com/xudong-bupt/p/3504442.html
 extern char* get_dir(char* filePath) {
@@ -47,7 +111,9 @@ extern char* get_host_ip() {
             } 
         }
         ifAddrStruct = ifAddrStruct->ifa_next;  
-    }  
+    }
+    
+    return addressBuffer;
 }
 
 extern int get_file_size(char* fileName) {
@@ -86,7 +152,7 @@ extern char** split(char* str, const char* delimiters, int length) {
 }
 
 extern void generate_port(int* a, int* b) {
-	srand((unsigned int)time(0));
+	srand((unsigned int)time(NULL));
 	int random;
 	random = rand() % 45536 + 20000;
 	*a = random / 256;

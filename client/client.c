@@ -30,7 +30,7 @@ int main(int argc, char **argv) {
 	int port[2];
 	char** tmp_str;
 	char command[8192], arguments[8192];
-	int port_pasv;
+	int port_pasv = -1;
 	int port_listenfd;
 
 	if ((sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
@@ -40,7 +40,7 @@ int main(int argc, char **argv) {
 
 	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
-	addr.sin_port = 23456;
+	addr.sin_port = 21;
 	if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) <= 0) {
 		printf("Error inet_pton(): %s(%d)\n", strerror(errno), errno);
 		return 1;
@@ -104,8 +104,10 @@ int main(int argc, char **argv) {
 			
 			if (port_pasv == 0) {
 				port_handler(sockfd, port_listenfd, port[0] * 256 + port[1], filePath, retr_stor);
-			} else {
+			} else if (port_pasv == 1) {
 				pasv_handler(sockfd, ip, port[0] * 256 + port[1], filePath, retr_stor);
+			} else {
+				waiting_for(sockfd, "");
 			}
 			continue;
 		} else if (strcmp(command, "PASV") == 0) {

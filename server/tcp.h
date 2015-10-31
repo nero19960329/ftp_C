@@ -35,6 +35,8 @@ extern int run_ftp(int port, Function fp) {
 	addr.sin_port = port;
 	addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	
+	printf("%d\n", (int)addr.sin_port);
+	
 	if (bind(listenfd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
 		printf("Error bind(): %s(%d)\n", strerror(errno), errno);
 		return STATUS_ERROR;

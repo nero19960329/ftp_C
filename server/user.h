@@ -62,7 +62,7 @@ int append_user(User_table* t, char* password, int index) {
 	t->users[t->length].index = index;
 	strcpy(t->users[t->length].password, password);
 	t->users[t->length].pass_flag = 0;
-	t->users[t->length].port_pasv = 0;
+	t->users[t->length].port_pasv = -1;
 	t->users[t->length].pasv_listenfd = 0;
 	t->users[t->length].bytes = 0;
 	t->users[t->length].files = 0;
@@ -78,6 +78,7 @@ int logout_user(User_table* t, int index) {
 	i = find_user(*t, index);
 	if (i >= 0) {
 		t->users[i].pass_flag = 0;
+		t->users[i].port_pasv = -1;
 		return 1;
 	} else {
 		return 0;
@@ -181,6 +182,15 @@ void get_bytes(User_table t, int index, int* bytes, int* files) {
 	} else {
 		*bytes = 0;
 		*files = 0;
+	}
+}
+
+void set_filePath(User_table* t, int index, char* userPath) {
+	int i;
+	
+	i = find_user(*t, index);
+	if (i >= 0) {
+		strcpy(t->users[i].filePath, userPath);
 	}
 }
 
